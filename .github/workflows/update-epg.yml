@@ -1,140 +1,41 @@
-name: Generate & Publish All-Channels EPG XML
+                      block = m.group(0)
+                      id_match = id_re.search(block)
+                      cid = id_match.group(1) if id_match else block
+                      if cid not in seen_channel_ids:
+                          seen_channel_ids.add(cid)
+                          out_xml.write("  " + block + "
+")
+                          out_gz.write("  " + block + "
+")
+                          total_channels += 1
 
-on:
-  schedule:
-    # Runs automatically every day at 00:30 UTC (06:00 AM IST) and 12:30 UTC (06:00 PM IST)
-    - cron: '30 0,12 * * *'
-  workflow_dispatch:
-    inputs:
-      sites:
-        description: 'Sites to grab: "ALL" for all sites in iptv-org/epg, or comma-separated site names'
-        required: false
-        default: 'ALL'
-      lang:
-        description: 'Optional ISO language filter (leave blank for ALL languages/channels)'
-        required: false
-        default: ''
-      days:
-        description: 'Number of EPG days to grab (1-3 recommended for all-channel builds)'
-        required: false
-        default: '2'
-      max_connections:
-        description: 'Max concurrent requests (higher = faster for all-channel builds)'
-        required: false
-        default: '20'
+              # Pass 2: Stream all <programme> blocks across all batch files
+              for fpath in xml_files:
+                  with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
+                      content = f.read()
+                  for m in prog_re.finditer(content):
+                      block = m.group(0)
+                      out_xml.write("  " + block + "
+")
+                      out_gz.write("  " + block + "
+")
+                      total_programmes += 1
 
-permissions:
-  contents: write
+              footer = "</tv>
+"
+              out_xml.write(footer)
+              out_gz.write(footer)
 
-jobs:
-  build-and-publish-epg:
-    runs-on: ubuntu-latest
-    # Maximum GitHub Actions job timeout is 360 minutes (6 hours)
-    timeout-minutes: 350
+          print(f"Merged {total_channels} unique channels and {total_programmes} programmes.")
+          EOF
 
-    env:
-      # Set DEFAULT_SITES to 'ALL' to grab all channels across all sites, or list specific sites
-      DEFAULT_SITES: 'ALL'
-      DEFAULT_LANG: ''
-      DEFAULT_DAYS: '2'
-      DEFAULT_MAX_CONNECTIONS: '20'
-      REQUEST_TIMEOUT_MS: '10000'
-
-    steps:
-      - name: Checkout your EPG repository
-        uses: actions/checkout@v4
-
-      - name: Set up Node.js 20 (required by iptv-org/epg)
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Clone latest upstream iptv-org/epg grabber
-        run: |
-          git clone --depth 1 -b master https://github.com/iptv-org/epg.git epg-grabber
-
-      - name: Cache iptv-org/epg npm dependencies
-        uses: actions/cache@v4
-        with:
-          path: ~/.npm
-          key: ${{ runner.os }}-node20-${{ hashFiles('epg-grabber/package-lock.json') }}
-          restore-keys: |
-            ${{ runner.os }}-node20-
-
-      - name: Install grabber dependencies
-        working-directory: epg-grabber
-        run: npm install
-
-      - name: Grab EPG XML for All Channels (All Languages)
-        working-directory: epg-grabber
-        run: |
-          mkdir -p public
-          SITES="${{ github.event.inputs.sites || env.DEFAULT_SITES }}"
-          LANG_FILTER="${{ github.event.inputs.lang || env.DEFAULT_LANG }}"
-          DAYS="${{ github.event.inputs.days || env.DEFAULT_DAYS }}"
-          MAX_CONN="${{ github.event.inputs.max_connections || env.DEFAULT_MAX_CONNECTIONS }}"
-
-          LANG_ARG=""
-          if [ -n "${LANG_FILTER}" ]; then
-            LANG_ARG="--lang=${LANG_FILTER}"
-          fi
-
-          if [ -f "../channels.xml" ]; then
-            echo "Found custom channels.xml in repository root. Grabbing channels..."
-            npm run grab --- \
-              --channels=../channels.xml \
-              ${LANG_ARG} \
-              --days="${DAYS}" \
-              --maxConnections="${MAX_CONN}" \
-              --timeout="${REQUEST_TIMEOUT_MS}" \
-              --output=public/guide.xml \
-              --gzip
-          elif [ "${SITES}" = "ALL" ]; then
-            echo "Building combined channels.xml from all sites in iptv-org/epg..."
-            node -e '
-              const fs = require("fs");
-              const path = require("path");
-              const glob = fs.readdirSync("sites", { withFileTypes: true })
-                .filter(d => d.isDirectory())
-                .map(d => path.join("sites", d.name, `${d.name}.channels.xml`))
-                .filter(f => fs.existsSync(f));
-              let out = ["<?xml version=\"1.0\" encoding=\"UTF-8\"?>", "<channels>"];
-              for (const file of glob) {
-                const content = fs.readFileSync(file, "utf8");
-                const matches = content.match(/<channel\b[^>]*>.*?<\/channel>/gs) || [];
-                for (const m of matches) out.push("  " + m);
-              }
-              out.push("</channels>");
-              fs.writeFileSync("all.channels.xml", out.join("\n"), "utf8");
-              console.log(`Merged ${glob.length} site channel files into all.channels.xml`);
-            '
-            npm run grab --- \
-              --channels=all.channels.xml \
-              ${LANG_ARG} \
-              --days="${DAYS}" \
-              --maxConnections="${MAX_CONN}" \
-              --timeout="${REQUEST_TIMEOUT_MS}" \
-              --output=public/guide.xml \
-              --gzip
-          else
-            echo "Grabbing all channels from specified sites: ${SITES}..."
-            npm run grab --- \
-              --sites="${SITES}" \
-              ${LANG_ARG} \
-              --days="${DAYS}" \
-              --maxConnections="${MAX_CONN}" \
-              --timeout="${REQUEST_TIMEOUT_MS}" \
-              --output=public/guide.xml \
-              --gzip
-          fi
-
-          # Guard against GitHub's 100 MB single-file push limit on gh-pages:
-          # Keep guide.xml.gz always, and remove raw guide.xml only if it exceeds 95 MB
+          # Guard against GitHub's 100 MB single-file push limit on gh-pages
           if [ -f "public/guide.xml" ]; then
-            FILE_SIZE_MB=$(du -m "public/guide.xml" | cut -f1)
-            echo "Uncompressed guide.xml size: ${FILE_SIZE_MB} MB"
-            if [ "${FILE_SIZE_MB}" -ge 95 ]; then
-              echo "guide.xml exceeds 95 MB GitHub file limit; keeping compressed guide.xml.gz for static hosting."
+            XML_MB=$(du -m "public/guide.xml" | cut -f1)
+            GZ_MB=$(du -m "public/guide.xml.gz" | cut -f1)
+            echo "Final sizes -> guide.xml: ${XML_MB} MB | guide.xml.gz: ${GZ_MB} MB"
+            if [ "${XML_MB}" -ge 95 ]; then
+              echo "Uncompressed guide.xml (${XML_MB} MB) exceeds GitHub 95 MB limit; publishing guide.xml.gz only."
               rm -f public/guide.xml
             fi
           fi
@@ -146,7 +47,7 @@ jobs:
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./epg-grabber/public
+          publish_dir: ./public
           publish_branch: gh-pages
           force_orphan: true
-          commit_message: 'chore(epg): auto-update all-channels guide.xml.gz [skip ci]'
+          commit_message: 'chore(epg): auto-update merged all-channels guide.xml.gz [skip ci]'
