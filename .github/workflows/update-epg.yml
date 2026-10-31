@@ -21,7 +21,6 @@
                   local_path = f"temp_epgs/source_{i}.xml"
                   urllib.request.urlretrieve(url, local_path)
                   
-                  # Handle .gz files if downloaded directly
                   if url.endswith(".gz"):
                       decompressed_path = f"temp_epgs/source_{i}_dec.xml"
                       with gzip.open(local_path, "rb") as f_in, open(decompressed_path, "wb") as f_out:
@@ -44,7 +43,7 @@
           channel_re = re.compile(r'<channel\s+id="([^"]+)"[^>]*>.*?</channel>', re.DOTALL)
           prog_re = re.compile(r'<programme\s+[^>]*>.*?</programme>', re.DOTALL)
 
-          with open(out_path_xml, "w", encoding="utf-z8", errors="ignore") as out_xml, \
+          with open(out_path_xml, "w", encoding="utf-8", errors="ignore") as out_xml, \
                gzip.open(out_path_gz, "wt", encoding="utf-8", errors="ignore") as out_gz:
               
               header = '<?xml version="1.0" encoding="UTF-8"?>\n<tv>\n'
