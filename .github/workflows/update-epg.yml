@@ -1,81 +1,86 @@
-name: Update EPG Guide
-
-on:
-  workflow_dispatch:
-  schedule:
-    - cron: '0 */6 * * *' # Runs every 6 hours
-permissions:
-  contents: write
-
-jobs:
-  update-epg:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-
-      - name: Generate and Merge EPG
+- name: Generate and Merge EPG
         shell: python3 {0}
         run: |
           import re
           import os
           import gzip
+          import urllib.request
 
           os.makedirs("public", exist_ok=True)
-          
-          # List your source XML/XMLTV URLs or local files here if needed, 
-          # or point to your running JTV-GO / source feeds.
-          xml_files = [] # Add paths if downloading or pulling in previous steps
-          
-          # Fallback or base structure for merged output
+          os.makedirs("temp_epgs", exist_ok=True)
+
+          # 1. Add your public EPG source URLs here
+          epg_urls = [
+              # Example: "https://your-source-provider.com/epg.xml.gz",
+          ]
+
+          xml_files = []
+          for i, url in enumerate(epg_urls):
+              try:
+                  print(f"Downloading EPG from {url}...")
+                  local_path = f"temp_epgs/source_{i}.xml"
+                  urllib.request.urlretrieve(url, local_path)
+                  
+                  # Handle .gz files if downloaded directly
+                  if url.endswith(".gz"):
+                      decompressed_path = f"temp_epgs/source_{i}_dec.xml"
+                      with gzip.open(local_path, "rb") as f_in, open(decompressed_path, "wb") as f_out:
+                          f_out.write(f_in.read())
+                      xml_files.append(decompressed_path)
+                  else:
+                      xml_files.append(local_path)
+              except Exception as e:
+                  print(f"Error fetching {url}: {e}")
+
           out_path_xml = "public/guide.xml"
           out_path_gz = "public/guide.xml.gz"
 
           print("Starting EPG merge process...")
           
-          # Example merge routine framework:
           seen_channel_ids = set()
           total_channels = 0
           total_programmes = 0
 
-          with open(out_path_xml, "w", encoding="utf-8") as out_xml, gzip.open(out_path_gz, "wt", encoding="utf-8") as out_gz:
+          channel_re = re.compile(r'<channel\s+id="([^"]+)"[^>]*>.*?</channel>', re.DOTALL)
+          prog_re = re.compile(r'<programme\s+[^>]*>.*?</programme>', re.DOTALL)
+
+          with open(out_path_xml, "w", encoding="utf-z8", errors="ignore") as out_xml, \
+               gzip.open(out_path_gz, "wt", encoding="utf-8", errors="ignore") as out_gz:
+              
               header = '<?xml version="1.0" encoding="UTF-8"?>\n<tv>\n'
               out_xml.write(header)
               out_gz.write(header)
 
-              # Placeholder loop for processing channel/programme blocks safely
-              # (Ensure your feed inputs are appended here)
+              # Pass 1: Extract unique channels
+              for fpath in xml_files:
+                  if not os.path.exists(fpath):
+                      continue
+                  with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
+                      content = f.read()
+                  for m in channel_re.finditer(content):
+                      block = m.group(0)
+                      id_match = re.search(r'id="([^"]+)"', block)
+                      cid = id_match.group(1) if id_match else block
+                      if cid not in seen_channel_ids:
+                          seen_channel_ids.add(cid)
+                          out_xml.write("  " + block + "\n")
+                          out_gz.write("  " + block + "\n")
+                          total_channels += 1
+
+              # Pass 2: Stream all programmes
+              for fpath in xml_files:
+                  if not os.path.exists(fpath):
+                      continue
+                  with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
+                      content = f.read()
+                  for m in prog_re.finditer(content):
+                      block = m.group(0)
+                      out_xml.write("  " + block + "\n")
+                      out_gz.write("  " + block + "\n")
+                      total_programmes += 1
 
               footer = "</tv>"
               out_xml.write(footer)
               out_gz.write(footer)
 
           print(f"Merged {total_channels} unique channels and {total_programmes} programmes successfully.")
-
-      - name: Check File Sizes and Guard Limits
-        run: |
-          if [ -f "public/guide.xml" ]; then
-            XML_MB=$(du -m "public/guide.xml" | cut -f1)
-            GZ_MB=$(du -m "public/guide.xml.gz" | cut -f1)
-            echo "Final sizes -> guide.xml: ${XML_MB} MB | guide.xml.gz: ${GZ_MB} MB"
-            if [ "${XML_MB}" -ge 95 ]; then
-              echo "Uncompressed guide.xml (${XML_MB} MB) exceeds GitHub 95 MB limit; publishing guide.xml.gz only."
-              rm -f public/guide.xml
-            fi
-          fi
-          date -u +"%Y-%m-%dT%H:%M:%SZ" > public/last_updated.txt
-          ls -lh public/
-
-      - name: Publish to gh-pages branch
-        uses: peaceiris/actions-gh-pages@v4
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./public
-          publish_branch: gh-pages
-          force_orphan: true
-          commit_message: "chore(epg): auto-update merged all-channels guide.xml.gz [skip ci]"
