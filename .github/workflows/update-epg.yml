@@ -31,7 +31,11 @@ jobs:
           os.makedirs("public", exist_ok=True)
           os.makedirs("temp_epgs", exist_ok=True)
 
+          # EPG sources that use both iptv-org IDs (Channel.in) and Jio/TataPlay IDs
           epg_urls = [
+              "https://epgshare01.online/epgshare01/epg_ripper_IN4.xml.gz",
+              "https://epgshare01.online/epgshare01/epg_ripper_US1.xml.gz",
+              "https://epgshare01.online/epgshare01/epg_ripper_UK1.xml.gz",
               "https://raw.githubusercontent.com/mitthu786/tvepg/main/jiotv/epg.xml.gz",
               "https://raw.githubusercontent.com/mitthu786/tvepg/main/tataplay/epg.xml.gz"
           ]
@@ -44,7 +48,7 @@ jobs:
                   print(f"Downloading EPG from {url}...")
                   local_path = f"temp_epgs/source_{i}.xml"
                   req = urllib.request.Request(url, headers=headers)
-                  with urllib.request.urlopen(req, timeout=60) as response, open(local_path, 'wb') as out_file:
+                  with urllib.request.urlopen(req, timeout=90) as response, open(local_path, 'wb') as out_file:
                       out_file.write(response.read())
                   
                   if url.endswith(".gz"):
@@ -66,9 +70,11 @@ jobs:
           total_channels = 0
           total_programmes = 0
 
-          channel_re = re.compile(r'<channel\s+id="([^"]+)"[^>]*>.*?</channel>', re.DOTALL)
+          channel_re = re.compile(r'<channel\s+id="([^"]+)"[^>]*>(.*?)</channel>', re.DOTALL)
           prog_re = re.compile(r'<programme\s+[^>]*>.*?</programme>', re.DOTALL)
+          name_re = re.compile(r'<display-name[^>]*>([^<]+)</display-name>')
 
+          # Map display names to iptv-org style IDs if needed
           with open(out_path_xml, "w", encoding="utf-8", errors="ignore") as out_xml, \
                gzip.open(out_path_gz, "wt", encoding="utf-8", errors="ignore") as out_gz:
               
@@ -84,11 +90,22 @@ jobs:
                   for m in channel_re.finditer(content):
                       block = m.group(0)
                       cid = m.group(1)
+                      inner = m.group(2)
                       if cid not in seen_channel_ids:
                           seen_channel_ids.add(cid)
                           out_xml.write("  " + block + "\n")
                           out_gz.write("  " + block + "\n")
                           total_channels += 1
+                          
+                          # Also register @SD and @HD variants used by recent iptv-org index.m3u
+                          if "." in cid and "@" not in cid:
+                              for suffix in ["@SD", "@HD"]:
+                                  alt_id = f"{cid}{suffix}"
+                                  if alt_id not in seen_channel_ids:
+                                      seen_channel_ids.add(alt_id)
+                                      alt_block = f'<channel id="{alt_id}">{inner}</channel>'
+                                      out_xml.write("  " + alt_block + "\n")
+                                      out_gz.write("  " + alt_block + "\n")
 
               for fpath in xml_files:
                   if not os.path.exists(fpath):
