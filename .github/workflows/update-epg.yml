@@ -1,4 +1,26 @@
-- name: Generate and Merge EPG
+name: Update EPG Guide
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */6 * * *'
+
+permissions:
+  contents: write
+
+jobs:
+  update-epg:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Generate and Merge EPG
         shell: python3 {0}
         run: |
           import re
@@ -9,9 +31,8 @@
           os.makedirs("public", exist_ok=True)
           os.makedirs("temp_epgs", exist_ok=True)
 
-          # 1. Add your public EPG source URLs here
           epg_urls = [
-              # Example: "https://your-source-provider.com/epg.xml.gz",
+              # Add your public EPG source URLs here if needed
           ]
 
           xml_files = []
@@ -50,7 +71,6 @@
               out_xml.write(header)
               out_gz.write(header)
 
-              # Pass 1: Extract unique channels
               for fpath in xml_files:
                   if not os.path.exists(fpath):
                       continue
@@ -66,7 +86,6 @@
                           out_gz.write("  " + block + "\n")
                           total_channels += 1
 
-              # Pass 2: Stream all programmes
               for fpath in xml_files:
                   if not os.path.exists(fpath):
                       continue
@@ -83,3 +102,26 @@
               out_gz.write(footer)
 
           print(f"Merged {total_channels} unique channels and {total_programmes} programmes successfully.")
+
+      - name: Check File Sizes and Guard Limits
+        run: |
+          if [ -f "public/guide.xml" ]; then
+            XML_MB=$(du -m "public/guide.xml" | cut -f1)
+            GZ_MB=$(du -m "public/guide.xml.gz" | cut -f1)
+            echo "Final sizes -> guide.xml: ${XML_MB} MB | guide.xml.gz: ${GZ_MB} MB"
+            if [ "${XML_MB}" -ge 95 ]; then
+              echo "Uncompressed guide.xml exceeds 95 MB limit; publishing gz only."
+              rm -f public/guide.xml
+            fi
+          fi
+          date -u +"%Y-%m-%dT%H:%M:%SZ" > public/last_updated.txt
+          ls -lh public/
+
+      - name: Publish to gh-pages branch
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./public
+          publish_branch: gh-pages
+          force_orphan: true
+          commit_message: "chore(epg): auto-update merged guide [skip ci]"
